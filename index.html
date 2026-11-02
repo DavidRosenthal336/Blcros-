@@ -53,6 +53,7 @@ html,body{height:100%;margin:0;background:var(--night);color:var(--frost);overfl
 .ind.hot b{color:var(--alarm)}
 .bub{position:absolute;bottom:36px;left:50%;transform:translateX(-50%);white-space:nowrap;font:400 15px/1 var(--f-type);color:var(--frost);text-shadow:0 1px 6px #000}
 #hud.cine > :not(#radio){display:none}
+#err{position:fixed;left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));top:calc(12px + env(safe-area-inset-top,0px));z-index:30;background:rgba(80,14,10,.92);color:#fff;font:500 14px/1.4 var(--f-hud);padding:10px 14px;border-left:3px solid var(--alarm);white-space:pre-wrap;overflow-wrap:anywhere}
 #flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:6}
 
 /* ---------- Title / dossier ---------- */
@@ -143,6 +144,7 @@ body.touch #radioText{font-size:15px}
 
 <canvas id="c" tabindex="0" aria-label="Game view"></canvas>
 <div id="flash"></div>
+<div id="err" hidden></div>
 
 <div id="hud" hidden>
   <div class="obj"><div class="eyebrow" id="objStep">Objective 1 of 4</div><div id="objText">Cut through the wire</div><div id="objSub"></div></div>
@@ -231,6 +233,7 @@ body.touch #radioText{font-size:15px}
   </div>
 </div>
 
+<script>setTimeout(function(){ if(!window.__nightjar){ var e=document.getElementById("err"); if(e && e.hidden){ e.hidden=false; e.textContent="The 3D engine did not load. Check your connection, then close and reopen the game."; } } },20000);</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -239,6 +242,9 @@ body.touch #radioText{font-size:15px}
 </script>
 <script type="module">
 import * as THREE from 'three';
+function showErr(msg){ const e=document.getElementById('err'); if(!e) return; e.hidden=false; e.textContent=(e.textContent?e.textContent+'\n':'')+'Graphics problem: '+String(msg).slice(0,240)+'. Send a screenshot of this to Claude.'; }
+addEventListener('error', ev=>showErr(ev.message||'script error'));
+addEventListener('unhandledrejection', ev=>showErr((ev.reason&&ev.reason.message)||ev.reason));
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -266,7 +272,11 @@ let TOUCH = matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints
 const LOW = TOUCH || Math.min(screen.width, screen.height) < 600;
 if (TOUCH) document.body.classList.add('touch');
 const canvas = $('c');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference:'high-performance' });
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias:false, powerPreference: LOW ? 'default' : 'high-performance' }); }
+catch(e){ showErr('this device could not start WebGL ('+e.message+')'); throw e; }
+renderer.debug.onShaderError = (gl, program, vs, fs) => { showErr('a shader failed to compile: '+(gl.getProgramInfoLog(program)||'unknown')); };
+const HDR_OK = renderer.capabilities.isWebGL2 && (renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float'));
 const DPR = Math.min(window.devicePixelRatio || 1, LOW ? 1.3 : 1.6);
 renderer.setPixelRatio(DPR);
 renderer.setSize(innerWidth, innerHeight, false);
@@ -282,13 +292,13 @@ scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0165);
 scene.background = FOG_COLOR;
 const camera = new THREE.PerspectiveCamera(innerHeight>innerWidth?74:58, innerWidth/innerHeight, 0.1, 1100);
 
-const rt = new THREE.WebGLRenderTarget(innerWidth*DPR, innerHeight*DPR, { type: THREE.HalfFloatType, samples: LOW ? 2 : 4 });
+const rt = new THREE.WebGLRenderTarget(innerWidth*DPR, innerHeight*DPR, { type: HDR_OK ? THREE.HalfFloatType : THREE.UnsignedByteType, samples: LOW || !HDR_OK ? 0 : 4 });
 const composer = new EffectComposer(renderer, rt);
 composer.setPixelRatio(DPR);
 composer.setSize(innerWidth, innerHeight);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.55, 0.82);
-composer.addPass(bloom);
+if (HDR_OK) composer.addPass(bloom);
 composer.addPass(new OutputPass());
 const GradeShader = {
   uniforms: { tDiffuse:{value:null}, uTime:{value:0}, uAlarm:{value:0}, uRes:{value:new THREE.Vector2(innerWidth,innerHeight)} },
@@ -576,7 +586,7 @@ let officeRoof, ledger;
   ledger.position.set(-25.75,0.82,-19.5); ledger.rotation.y = 0.25; scene.add(ledger);
   const lb = mesh(new THREE.CylinderGeometry(0.03,0.07,0.32,8), M.dark); lb.position.set(-26.55,0.94,-19.75); scene.add(lb);
   const shade = mesh(new THREE.CylinderGeometry(0.1,0.18,0.12,12,1,true), new THREE.MeshStandardMaterial({color:0x1f4a2a, roughness:0.4, side:THREE.DoubleSide})); shade.position.set(-26.55,1.12,-19.7); scene.add(shade);
-  const deskLight = new THREE.PointLight(0xffb468, 9, 9, 1.6); deskLight.position.set(-26.5,1.05,-19.6); scene.add(deskLight);
+  if (!LOW){ const deskLight = new THREE.PointLight(0xffb468, 9, 9, 1.6); deskLight.position.set(-26.5,1.05,-19.6); scene.add(deskLight); }
   const bulb = new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:new THREE.Color(3,2,1),blending:THREE.AdditiveBlending,transparent:true,depthWrite:false})); bulb.position.set(-26.55,1.04,-19.7); bulb.scale.set(0.7,0.7,1); scene.add(bulb);
   W.lamps.push({ x:-26.5, z:-19.6, r:4.5, k:0.8 });
   for (let i=0;i<3;i++) solid(-21.6 + i*0.95 - 0.8, -21.5, 0.85, 1.7, 0.6, M.pipe);
@@ -667,7 +677,7 @@ function lamp(x,z,rot){
 }
 lamp(-12,27,Math.PI/2); lamp(11,17,-Math.PI/2); lamp(-24,-9.5,Math.PI); lamp(21,-5,0); lamp(-38,9,Math.PI/2); lamp(37,24,Math.PI);
 { // wall lamp over the lab loading door
-  const L=new THREE.PointLight(0xffb070, 30, 16, 1.6); L.position.set(9.4,5.0,-10.3); scene.add(L);
+  if (!LOW){ const L=new THREE.PointLight(0xffb070, 30, 16, 1.6); L.position.set(9.4,5.0,-10.3); scene.add(L); }
   const halo=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:new THREE.Color(2,1.2,0.6),blending:THREE.AdditiveBlending,transparent:true,depthWrite:false})); halo.position.set(9.4,5.0,-10.6); halo.scale.set(2.6,2.6,1); scene.add(halo);
   W.lamps.push({ x:9.4, z:-9.8, r:8, k:0.9 });
 }
@@ -885,8 +895,12 @@ const GUARDS = [];
 const indicators = $('indicators');
 ROUTES.forEach((route,i)=>{
   const m=makeHuman('guard'); scene.add(m.root);
-  const spot=new THREE.SpotLight(0xffe7c4, 26, 22, 0.36, 0.6, 1.45); spot.position.set(0.33,1.3,0.45); m.root.add(spot);
-  const tgt=new THREE.Object3D(); tgt.position.set(0.33,0,8); m.root.add(tgt); spot.target=tgt;
+  const tgt=new THREE.Object3D(); tgt.position.set(0.33,0,8); m.root.add(tgt);
+  let spot;
+  if (!LOW){ spot=new THREE.SpotLight(0xffe7c4, 26, 22, 0.36, 0.6, 1.45); spot.position.set(0.33,1.3,0.45); m.root.add(spot); spot.target=tgt; }
+  else { spot={ intensity:0, position:V3(0.33,1.3,0.45) };
+    const pool=new THREE.Mesh(new THREE.PlaneGeometry(1,1), new THREE.MeshBasicMaterial({map:glowTex,color:new THREE.Color(0.55,0.47,0.35),blending:THREE.AdditiveBlending,transparent:true,depthWrite:false}));
+    pool.rotation.x=-Math.PI/2; pool.position.set(0.33,0.05,5.5); pool.scale.set(4.2,6.5,1); m.root.add(pool); m.pool=pool; }
   const bm=beamMaterial(0xffe2b8, 0.09); beamMats.push(bm);
   const beam=new THREE.Mesh(coneGeo,bm); beam.position.copy(spot.position); beam.frustumCulled=false;
   const dir=V3().subVectors(tgt.position, spot.position); const len=dir.length(); beam.quaternion.setFromUnitVectors(V3(0,0,1), dir.normalize()); beam.scale.set(len*Math.tan(0.36)*0.8, len*Math.tan(0.36)*0.8, len); m.root.add(beam);
@@ -972,7 +986,7 @@ function resetGame(){
   FX_POOL.forEach(p=>{ p.alive=false; p.s.visible=false; });
   blastLights.forEach(l=>l.intensity=0);
   GUARDS.forEach(g=>{ const [x,z]=g.route[0]; g.pos.set(x,0,z); g.prev.copy(g.pos); g.wp=1%g.route.length; g.state='patrol'; g.aw=0; g.wait=R(0,2); g.downT=0; g.found=false; g.sees=false;
-    const [nx,nz]=g.route[g.wp]; g.yaw=Math.atan2(nx-x,nz-z); g.m.root.rotation.set(0,g.yaw,0); g.m.root.position.copy(g.pos); g.spot.intensity=26; g.beam.visible=true; g.lensGlow.visible=true; g.bubbleT=0; g.m.body.position.y=0; });
+    const [nx,nz]=g.route[g.wp]; g.yaw=Math.atan2(nx-x,nz-z); g.m.root.rotation.set(0,g.yaw,0); g.m.root.position.copy(g.pos); g.spot.intensity=26; g.beam.visible=true; if(g.m.pool) g.m.pool.visible=true; g.lensGlow.visible=true; g.bubbleT=0; g.m.body.position.y=0; });
   radioQueue.length=0; radioCur=null; $('radio').hidden=true;
   setGain(sirenGain,0); setGain(tensionGain,0);
 }
@@ -1151,7 +1165,7 @@ function takedownTarget(){
 }
 function doTakedown(){
   const g=takedownTarget(); if(!g) return;
-  g.state='down'; g.downT=0; g.aw=0; g.spot.intensity=0; g.beam.visible=false; g.lensGlow.visible=false; g.el.hidden=true;
+  g.state='down'; g.downT=0; g.aw=0; g.spot.intensity=0; g.beam.visible=false; if(g.m.pool) g.m.pool.visible=false; g.lensGlow.visible=false; g.el.hidden=true;
   S.stats.takedowns++; sfxNoise(0.25,400,0.25,'lowpass'); sfxNoise(0.12,180,0.4,'lowpass');
   once('td1',()=>{ say('Adler','Clean. You could finish him, you know.'); say('Hale','He\'ll wake up with a headache. That\'s all I came to give him.'); });
 }
